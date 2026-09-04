@@ -2,6 +2,29 @@
 
 Research and root-cause analysis, 2026-09-04.
 
+Files in this directory:
+
+| File | Purpose |
+|---|---|
+| `FIX-PROCEDURE.md` | The reproducible step-by-step procedure. Start there. |
+| `patches/reshade-dxgi-factory-vtable-hooks-option.patch` | Source fix for ReShade 6.6.0 and later: auto-select vtable factory hooks when the NVIDIA overlay is loaded, plus an `[APP] DXGIFactoryVTableHooks` override. Verified to apply to v6.8.0 and main. |
+| `tools/Collect-NvCaptureDiag.ps1` | Collects display topology, NVIDIA and ReShade logs, registry and loaded modules. |
+| `tools/Set-NvCaptureWorkaround.ps1` | Applies or reverts each workaround with backups. |
+| `README.md` | This analysis and the evidence behind it. |
+
+## 0. The ReShade version boundary (added after source-history review)
+
+ReShade's DXGI hooking changed between 6.5.1 and 6.6.0, verified from the git history of `crosire/reshade`:
+
+| Tag | Date | Factory | Adapter | Swapchain |
+|---|---|---|---|---|
+| v6.5.1 | 2025-06-08 | real object, vtable-hooked | real object | ReShade proxy |
+| v6.6.0 and later | 2025-09-26 | ReShade proxy (commit d43daf0, 2025-06-20) | ReShade proxy (commit 3adf9c5, 2025-08-20) | ReShade proxy |
+
+The 6.6.0 commit message says why: "NVIDIA Smooth Motion creates vtable hooks that intercept swap chain creation requests from the application. By using a proxy DXGI factory, commands from the application will reach ReShade first". In other words, NVIDIA driver code inside the game process vtable-hooks whatever DXGI factory it sees, and since 6.6.0 the app-side factory it sees is ReShade's. An `IDXGIOutput` proxy also existed between 2025-08 and 2025-09-11 and was removed as unused (commit 66184d7). ReShade's own code notes that DXGI-internal code crashes when it reaches a proxied adapter through device-to-adapter navigation (`source/d3d11/d3d11_device.cpp:118-126`).
+
+ReShade still contains the vtable-hook path and switches to it automatically when the Ubisoft Connect overlay module is present (`source/dxgi/dxgi.cpp`, `use_dxgi_factory_vtable_hooks`). The patch in this directory adds the NVIDIA capture module and a configuration override to that switch. Step 4 of the procedure (install 6.5.1) tests this hypothesis directly without building anything.
+
 ## 1. Symptom under investigation
 
 - Game runs fullscreen on a portrait monitor, desktop resolution 2160×3840. A second landscape monitor is 2560×1440.
@@ -80,29 +103,33 @@ The portrait orientation may be an additional aggravating factor, because a rota
 - No NVIDIA driver release note was found that lists a fix for ShadowPlay wrong-monitor capture on rotated displays.
 - The exact strings "Failed to fetch Current Res" and "CaptureFrame failed 0x7" do not appear in any public ShadowPlay report; they only appear in NVIDIA developer-forum threads about the standalone Capture SDK.
 
-## 7. Ordered isolation tests
+## 7. Isolation tests and fixes
 
-Run in this order. Each test changes one variable and has a decisive outcome.
+The ordered, reproducible procedure is in `FIX-PROCEDURE.md`. Summary of the order and why:
 
-| # | Test | If recording now works | If it still fails |
-|---|---|---|---|
-| T1 | Rename ReShade's `dxgi.dll` to `d3d11.dll` (or `d3d12.dll` for a D3D12 game) so the game directory no longer contains a module named `dxgi.dll`. Keep everything else identical. | NVIDIA's component was resolving DXGI by module name and hitting ReShade's exports. Permanent workaround found. | Module name is not the trigger; proceed to T2. |
-| T2 | Make the portrait monitor the Windows primary display and the NVIDIA Control Panel primary (asterisk in "Set up multiple displays"). | The fallback path binds to the primary output. Confirms the KB 5164 class of bug is the second half of the chain. | Fallback is not "primary"; may be "first enumerated output". Try physically swapping the two monitors' connector order and repeat. |
-| T3 | Temporarily disconnect or disable the 2560×1440 monitor, leaving only the portrait one. | Wrong-output selection confirmed as the failure point. | Something other than output choice is failing; collect logs (section 9) before continuing. |
-| T4 | Force the opposite fullscreen mode with the game's own settings (exclusive fullscreen vs borderless). If the game has no option, use ReShade's Swapchain Override add-on `ForceWindowed`/`ForceFullscreen` for this test only. | The two modes take different association paths inside NVIDIA's capture. Use the working mode. | Presentation mode is not the differentiator. |
-| T5 | Set the game monitor to landscape orientation for one run (game at 3840×2160). | Rotation is part of the trigger. Report to NVIDIA with logs. | Rotation is irrelevant; the problem is purely output selection. |
-| T6 | Inject ReShade without a proxy DLL: use a global injector that loads `ReShade64.dll` by its own name after the game starts, with no `dxgi.dll` in the game folder. | Confirms T1's conclusion from a second angle. | ReShade's proxy objects themselves, not the module name, are the trigger. Only NVIDIA can fix that; use section 8 workarounds. |
+| Step | Change | Evidence for it |
+|---|---|---|
+| 1 | Overlay Privacy control: Desktop capture OFF, game in exclusive fullscreen | NVIDIA KB 5164 full text (recovered from the Wayback Machine): this is NVIDIA's own fix for wrong-screen capture in multi-monitor setups on Windows 10 20H1 and later. |
+| 2 | NVIDIA App video capture Resolution: explicit value instead of "In-game" | Matches the failing log line "Failed to fetch Current Res". Single NVIDIA forum report of it fixing wrong-monitor recording. |
+| 3 | Portrait monitor as primary (and NVIDIA Control Panel primary); disconnect the other monitor as a control | Repeated NVIDIA forum workaround; public NvFBC header documents default tracking as "primary output, else first output". |
+| 4 | Install ReShade 6.5.1 | Version boundary in section 0: last release without proxy factory and adapter objects. Decisive for the ReShade half. |
+| 5 | Build current ReShade with the included patch and set `[APP] DXGIFactoryVTableHooks=1` | Restores 6.5.1 hooking behaviour on current ReShade; the code path already exists upstream for the Ubisoft overlay. |
+| 6 | Rename the DLL to `d3d11.dll`/`d3d12.dll`, switch presentation mode, or use Vulkan | Renaming changes only module-name resolution, not object proxying (verified: proxies are created in every install mode, `dll_main.cpp:275-335`), so it ranks below the version test. |
+| 8 | Desktop capture ON, or OBS Game Capture | Records ReShade output through a display-tracking session instead of PID capture. |
 
-## 8. Workarounds, with evidence quality
+Notes on the earlier hypotheses:
 
-1. **Rename ReShade's DLL** (T1). Documented and widely used ReShade compatibility technique for injector conflicts (https://reshade.me/forum/troubleshooting/5309-dxgi-dll-and-d3d11-dll-not-working-together , https://reshade.me/forum/troubleshooting/6058-can-i-rename-dll-files). Not yet verified against this specific NvFBC failure. Anti-cheat titles may reject the renamed module.
-2. **Make the portrait monitor the primary display** (T2). This is the workaround NVIDIA and multiple independent users give for the KB 5164 wrong-screen bug.
-3. **Switch the NVIDIA overlay to desktop capture** for this game: Alt+Z, Settings, Privacy control, enable "Desktop capture". This makes NVIDIA use an output-tracking session on the display rather than a PID session, and it still records ReShade's effects because they are in the presented frame. It records the whole monitor, including any overlays.
-4. **Keep display topology stable.** DisplayPort hot-plug and monitor sleep re-enumerate the topology and are independently reported to make ShadowPlay lose the correct monitor (https://blog.cover1sea.net/pc/4453/). Match HDR state across both monitors; mixed HDR is reported to cause instant-stop recordings (https://favorite-fashion.com/blog101/).
-5. **Use ReShade's Vulkan layer path** if the game has a Vulkan renderer. Vulkan ReShade installs as a system-wide layer and does not proxy DXGI at all (https://reshade.me/forum/troubleshooting/7361-reshade-and-dxvk-dxgi-dll-on-windows).
-6. **Fall back to OBS Game Capture.** Repeatedly recommended on the ReShade forum as the reliable way to record ReShade output when injector ordering fights with ShadowPlay. Multiple independent reports.
+- Module-name collision on `dxgi.dll` is now ranked low: ReShade wraps the factory, adapter and swapchain whether it is loaded as `dxgi.dll` (export proxy) or as `d3d11.dll` (function hooks on the system `dxgi.dll`). Only code that resolves `dxgi.dll` by module name would behave differently.
+- The `[APP] ForceWindowed`/`ForceFullscreen`/`ForceResolution` keys live in the separately shipped Swapchain Override add-on, not in core ReShade, so they were already excluded by the user's add-on-free test.
+- No ReShade changelog entry or issue mentions ShadowPlay, NVIDIA App, GeForce Experience or NvFBC. The 6.6.0 changelog entry "Reworked DXGI hooks to prefer usage of proxy classes" is the only relevant upstream change.
 
-Workarounds 1 and 3 are the cheapest and should be tried first.
+## 8. Additional NVIDIA-side facts found
+
+- NVIDIA KB 5602 (2024-11-15) says Desktop capture ON can also stop recordings when copy-protected content is detected in any window, and recommends driver 551.52 or newer for NVIDIA App overlay features.
+- The Desktop capture toggle is stored at `HKCU\SOFTWARE\NVIDIA Corporation\Global\ShadowPlay\NVSPCAPS`, values `DwmEnabled` and `DwmEnabledUser` (4-byte binary). Confirmed by registry diff on Stack Overflow and an ASUS forum thread.
+- One NVIDIA forum report states that GPU output port order, not the Windows primary setting, decided which monitor ShadowPlay captured. The procedure includes a cable swap for that case.
+- DisplayPort hot-plug and monitor sleep re-enumerate the topology and are independently reported to make ShadowPlay lose the correct monitor (https://blog.cover1sea.net/pc/4453/). Mixed HDR state across monitors is reported to cause instant-stop recordings (https://favorite-fashion.com/blog101/).
+- `nvspcap64.dll` is the NVIDIA capture library injected into the game by the NVIDIA container service. No public write-up documents how it resolves DXGI or identifies the swapchain; that remains unverified.
 
 ## 9. Logs to collect if reporting to NVIDIA or ReShade
 
@@ -120,12 +147,21 @@ Workarounds 1 and 3 are the cheapest and should be tried first.
 | ReShade replaces the COM identity of factory, adapter and swapchain | High, verified in source |
 | NVIDIA has an acknowledged multi-monitor wrong-screen capture bug tied to Windows VidPN changes | High, official KB title and summary, plus independent reports |
 | Error 7 means the tracked output no longer matches the capture source | High, multiple independent NvFBC consumers |
-| ReShade's proxy identity is what diverts NVIDIA onto the failing fallback path | Medium, consistent with all evidence, no direct public report; T1 and T6 decide it |
-| Portrait rotation is itself part of the trigger | Low, no evidence either way; T5 decides it |
+| ReShade 6.6.0 introduced proxy factory and adapter objects; 6.5.1 did not | High, verified in git history and tags |
+| NVIDIA driver code vtable-hooks the DXGI factory it observes in-process | High, stated in ReShade commit d43daf0 and source comment |
+| ReShade's proxy factory/adapter objects are what divert NVIDIA onto the failing fallback path | Medium, consistent with all evidence, no direct public report; Step 4 of the procedure decides it |
+| Disabling Desktop capture plus exclusive fullscreen fixes wrong-screen capture | High as NVIDIA's official guidance; untested on this exact machine |
+| Portrait rotation is itself part of the trigger | Low, no evidence either way |
 
 ## 11. Sources
 
-- NVIDIA KB 5164, "GeForce Experience Shadowplay may intermittently record the wrong screen in multi-monitor configurations", 2021-10-05: https://nvidia.custhelp.com/app/answers/detail/a_id/5164
+- NVIDIA KB 5164, "GeForce Experience Shadowplay may intermittently record the wrong screen in multi-monitor configurations", updated 2021-03-05: https://nvidia.custhelp.com/app/answers/detail/a_id/5164 (full text via http://web.archive.org/web/2023id_/https://nvidia.custhelp.com/app/answers/detail/a_id/5164)
+- NVIDIA KB 5602, "NVIDIA App Instant Replay -> Desktop capture does not start or stops recording", 2024-11-15: https://nvidia.custhelp.com/app/answers/detail/a_id/5602
+- NVSPCAPS registry values for Desktop capture: https://stackoverflow.com/questions/66362524/ and https://rog-forum.asus.com/t5/rog-gaming-notebooks/enable-shadowplay-to-record-your-desktop/td-p/560358
+- ReShade commit d43daf0 "Rework DXGI factory hooks to use a proxy class (#359)", 2025-06-20: https://github.com/crosire/reshade/commit/d43daf0a9ef3b375cc0578c7147506a7fdd90396
+- ReShade commit 3adf9c5 "Add DXGI adapter proxy to track swap chain creation (#369)", 2025-08-20; commit 66184d7 "Remove unused IDXGIOutput proxy class", 2025-09-11
+- ReShade 6.6 release notes ("Reworked DXGI hooks to prefer usage of proxy classes"): https://reshade.me/releases/10138-6-6
+- ReShade 6.5.1 installer (official archive): https://reshade.me/downloads/ReShade_Setup_6.5.1.exe
 - NVIDIA Technical Bulletin TB-09382-001, NvFBC Windows 10 support: https://developer.download.nvidia.com/designworks/capture-sdk/docs/NVFBC_Win10_Deprecation_Tech_Bulletin.pdf
 - NVIDIA developer forum, NVFBC_ERROR_INVALIDATED_SESSION: https://forums.developer.nvidia.com/t/nvfbc-error-invalidated-session/162347
 - NVIDIA developer forum, fullscreen capture issue (NvFBC session bug acknowledged): https://forums.developer.nvidia.com/t/fullscreen-video-capture-issue/162382

@@ -1,0 +1,44 @@
+diff --git a/source/dxgi/dxgi.cpp b/source/dxgi/dxgi.cpp
+index c736654..2956e31 100644
+--- a/source/dxgi/dxgi.cpp
++++ b/source/dxgi/dxgi.cpp
+@@ -12,6 +12,7 @@
+ #include "com_utils.hpp"
+ #include "hook_manager.hpp"
+ #include "addon_manager.hpp"
++#include "ini_file.hpp"
+ 
+ extern bool is_windows7();
+ 
+@@ -604,6 +605,14 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition_Impl(IDXGI
+ 
+ static bool use_dxgi_factory_vtable_hooks()
+ {
++	// Allow forcing the hooking method via configuration, for compatibility with external hooks that require the original factory (and adapter) objects
++	//   [APP]
++	//   DXGIFactoryVTableHooks=1   (always use vtable hooks, i.e. the behavior before ReShade 6.6)
++	//   DXGIFactoryVTableHooks=0   (always use proxy objects)
++	if (bool force_vtable_hooks = false;
++		reshade::global_config().get("APP", "DXGIFactoryVTableHooks", force_vtable_hooks))
++		return force_vtable_hooks;
++
+ 	// Have to use vtable hooks when Ubisoft Connect in-game overlay is loaded, because it installs hooks on the vtable entries of every factory returned,
+ 	// but those hooks always call back to the original functions of the last factory returned. So if an application first creates its own factory and then an internal one is created by D3D12,
+ 	// any calls the application is doing end up redirected to the vtable entries of the internal factory. Should that first factory be proxied, but the internal one not, then the call chain gets messed up and things crash.
+@@ -614,6 +623,16 @@ static bool use_dxgi_factory_vtable_hooks()
+ #endif
+ 		return true;
+ 
++	// The NVIDIA in-game overlay capture library (ShadowPlay / NVIDIA App) associates the process with a display for its NvFBC PID capture session
++	// from the DXGI objects it observes inside the process. Hand it the original factory and adapter objects when it is loaded, since proxied ones
++	// were observed to make it bind the capture session to the wrong display in multi-monitor configurations (recording then stops immediately)
++#ifndef _WIN64
++	if (GetModuleHandleW(L"nvspcap.dll") != nullptr)
++#else
++	if (GetModuleHandleW(L"nvspcap64.dll") != nullptr)
++#endif
++		return true;
++
+ 	// External hooks may create a DXGI factory and rewrite the vtable (e.g. NVIDIA Smooth Motion), so prefer proxy, to ensure ReShade gets called first
+ 	return false;
+ }
