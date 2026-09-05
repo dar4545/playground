@@ -1,0 +1,62 @@
+diff --git a/src/scgui/scGUIMain.cpp b/src/scgui/scGUIMain.cpp
+index 1aaf130..de4181b 100644
+--- a/src/scgui/scGUIMain.cpp
++++ b/src/scgui/scGUIMain.cpp
+@@ -27,6 +27,33 @@ bool attachToGame = false;
+ 
+ HWND hwnd;
+ RECT cacheRect{ 100, 100, 730, 910 };
++// Set once the GUI window has been placed on the game's monitor (or moved by the user), so absolute
++// coordinates are only used as a fallback. Without this the window always opens at (100,100), which is
++// on the primary display, not necessarily on the display the game runs on. In multi-monitor setups this
++// gave capture tools (NVIDIA overlay PID capture) a second window of this process on the wrong display.
++static bool cacheRectPlaced = false;
++
++static void PlaceGuiRectOnGameMonitor()
++{
++    if (cacheRectPlaced) return;
++    HWND gameHwnd = FindWindowW(L"UnityWndClass", L"imasscprism");
++    if (gameHwnd == NULL) return;
++    HMONITOR monitor = MonitorFromWindow(gameHwnd, MONITOR_DEFAULTTONEAREST);
++    MONITORINFO mi{ sizeof(MONITORINFO) };
++    if (monitor == NULL || !GetMonitorInfoW(monitor, &mi)) return;
++    const LONG width = cacheRect.right - cacheRect.left;
++    const LONG height = cacheRect.bottom - cacheRect.top;
++    const LONG workWidth = mi.rcWork.right - mi.rcWork.left;
++    const LONG workHeight = mi.rcWork.bottom - mi.rcWork.top;
++    // Keep the window fully inside the game's monitor work area (portrait displays are narrow).
++    const LONG w = width < workWidth ? width : workWidth;
++    const LONG h = height < workHeight ? height : workHeight;
++    cacheRect.left = mi.rcWork.left + (workWidth - w) / 2;
++    cacheRect.top = mi.rcWork.top + (workHeight - h) / 2;
++    cacheRect.right = cacheRect.left + w;
++    cacheRect.bottom = cacheRect.top + h;
++    cacheRectPlaced = true;
++}
+ 
+ void SetGuiDone(bool isDone) {
+     guiDone = isDone;
+@@ -78,6 +105,7 @@ void guimain()
+     if (!attachToGame) {
+         WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, L"iM@S SCSP Localify", NULL };
+         ::RegisterClassExW(&wc);
++        PlaceGuiRectOnGameMonitor();
+         hwnd = ::CreateWindowW(wc.lpszClassName, L"iM@S SCSP GUI", WS_OVERLAPPEDWINDOW, cacheRect.left, cacheRect.top,
+             cacheRect.right - cacheRect.left, cacheRect.bottom - cacheRect.top, NULL, NULL, wc.hInstance, NULL);
+         if (nowTopStat) SetWindowTop();
+@@ -327,6 +355,15 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+         cacheRect.right = rect->right;
+         cacheRect.top = rect->top;
+         cacheRect.bottom = rect->bottom;
++        cacheRectPlaced = true;
++    }; break;
++    case WM_EXITSIZEMOVE: {
++        // Remember where the user left the window (including plain moves), so it reopens there.
++        RECT rect{};
++        if (::GetWindowRect(hWnd, &rect)) {
++            cacheRect = rect;
++            cacheRectPlaced = true;
++        }
+     }; break;
+     case WM_SYSCOMMAND:
+         if ((wParam & 0xfff0) == SC_KEYMENU) // Disable ALT application menu

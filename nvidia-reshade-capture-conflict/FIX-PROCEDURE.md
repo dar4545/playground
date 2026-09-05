@@ -222,3 +222,14 @@ Step 5 PASS           -> patched ReShade with DXGIFactoryVTableHooks=1; submit u
 Step 6 PASS           -> keep that variant.
 All FAIL              -> Step 8 fallback; file both reports with Step 7 evidence.
 ```
+
+---
+
+## Addendum: if the scsp-localify plugin is also installed
+
+See `PLUGIN-scsp-localify.md` for the analysis. Changes to the steps above:
+
+- **Step 0** gains two extra baselines: game with plugin only (`version.dll` present, ReShade DLL renamed off) and game with both. If "plugin only" fails, the plugin's GUI or console window is a trigger on its own.
+- **Every TEST**: close the plugin GUI (Ctrl+U) and click the game window before pressing Alt+F9. Run the tests with `"enableConsole": false` in `scsp-config.json`.
+- **Step 1 and Step 6b**: in-game resolution and fullscreen changes are blocked by the plugin after startup. Use `startResolution` in `scsp-config.json` (`{"w": 2160, "h": 3840, "isFull": true}`) or the GUI's "Update Resolution", then close the GUI. For true exclusive fullscreen on Unity, add `-window-mode exclusive -monitor <n>` to the launch arguments if the launcher allows it.
+- **Optional**: build the plugin with `patches/scsp-localify-gui-window-on-game-monitor.patch` so the GUI opens on the game's monitor. Test "GUI open on portrait monitor" vs "GUI closed" to tell display ambiguity apart from the second (WARP) swapchain as the trigger.

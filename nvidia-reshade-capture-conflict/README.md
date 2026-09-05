@@ -7,6 +7,8 @@ Files in this directory:
 | File | Purpose |
 |---|---|
 | `FIX-PROCEDURE.md` | The reproducible step-by-step procedure. Start there. |
+| `PLUGIN-scsp-localify.md` | Whether adding the scsp-localify plugin (second GUI window, own WARP D3D11 device) creates new conflicts, and what changes in the procedure. |
+| `patches/scsp-localify-gui-window-on-game-monitor.patch` | Plugin patch: open its GUI window on the monitor that holds the game window instead of absolute coordinates on the primary display. |
 | `patches/reshade-dxgi-factory-vtable-hooks-option.patch` | Source fix for ReShade 6.6.0 and later: auto-select vtable factory hooks when the NVIDIA overlay is loaded, plus an `[APP] DXGIFactoryVTableHooks` override. Verified to apply to v6.8.0 and main. |
 | `tools/Collect-NvCaptureDiag.ps1` | Collects display topology, NVIDIA and ReShade logs, registry and loaded modules. |
 | `tools/Set-NvCaptureWorkaround.ps1` | Applies or reverts each workaround with backups. |
