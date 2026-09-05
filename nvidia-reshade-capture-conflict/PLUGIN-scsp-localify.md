@@ -51,6 +51,19 @@ The included patch `patches/scsp-localify-gui-window-on-game-monitor.patch` (37 
 4. **Apply the GUI patch** if you need the plugin window open while recording (for example to drive the free camera during a take). Build with the repository's `generate.bat` and Visual Studio 2022 as described in `readme_EN.md`.
 5. **Diagnostics.** `tools/Collect-NvCaptureDiag.ps1 -GameExe imasscprism.exe` lists loaded modules; expect `version.dll` from the game folder and, while the GUI is open, `d3d10warp.dll`. Two `IDXGISwapChain` creations will be visible in `ReShade.log`.
 
+## Fork versus upstream: device creation order matters
+
+Upstream `chinosk6/scsp-localify` (10abb3e, 2026-08-01) creates the GUI device with `D3D_DRIVER_TYPE_HARDWARE` first and falls back to WARP. The `dar4545` fork (3890f84) reverses this: WARP first, hardware only on `DXGI_ERROR_UNSUPPORTED`. Keep the fork's order. With upstream's order:
+
+- ReShade proxies the hardware device and its swapchain, so a second ReShade runtime opens inside the plugin window (ReShade's overlay and effects drawn on the GUI, ReShade's input hooks on that window).
+- NVIDIA's overlay sees a second swapchain on the NVIDIA adapter in the same process, which is a stronger wrong-surface candidate for PID capture than a WARP swapchain it cannot capture anyway.
+
+## Community evidence (searched 2026-09-05)
+
+- No issue, discussion, or forum post was found that pairs scsp-localify, or its sibling projects sharing the same GUI code (umamusume-localify, gakuen-imas-localify), with ReShade, NVIDIA overlay or ShadowPlay, Steam overlay, OBS, or multi-monitor problems. Searches covered GitHub issues and discussions of the upstream repository and both siblings, and English, Chinese and Japanese web queries. This is a low-traffic project, so absence of reports is weak evidence either way.
+- The closest data point is upstream issue #118 "Failed to start control GUI" (opened 2026-08-19, open, undiagnosed): pressing Ctrl+U logs "GUI START", repeated "init D3D failed", "GUI END". That is the exact log path when `D3D11CreateDeviceAndSwapChain` fails in `CreateDeviceD3D`. Nobody in the thread names a cause. If the GUI fails to open on a machine that also runs ReShade or the NVIDIA overlay, that issue is the place to compare notes; the `ReShade.log` lines around the second device creation will say whether ReShade was in the call path. https://github.com/chinosk6/scsp-localify/issues/118
+- No PCGamingWiki entry exists for the game, so the renderer (D3D11 vs D3D12) and Unity swap-effect settings could not be confirmed from public sources. `ReShade.log` records both at startup (the "Redirecting D3D11CreateDeviceAndSwapChain" block and the swapchain description dump), which the diagnostic collector copies.
+
 ## Confidence
 
 | Claim | Confidence |
@@ -58,6 +71,6 @@ The included patch `patches/scsp-localify-gui-window-on-game-monitor.patch` (37 
 | Plugin does not hook any DXGI/D3D/Present symbol; only extra window, WARP device, window subclass, resolution hook | High, verified in source |
 | ReShade skips the WARP device and its swapchain | High, verified in ReShade source |
 | No `LoadLibraryW` detour stacking with ReShade | High, ReShade source; note ReShade falls back to a detour only if DLL notification registration fails |
-| Open GUI window on the other monitor triggers the same NVIDIA wrong-display failure | Medium: consistent with NVIDIA's documented fallback behaviour and with the mechanism in `README.md`, not yet reproduced on this machine; test with the GUI open vs closed |
+| Open GUI window on the other monitor triggers the same NVIDIA wrong-display failure | Medium (no public report either way): consistent with NVIDIA's documented fallback behaviour and with the mechanism in `README.md`, not yet reproduced on this machine; test with the GUI open vs closed |
 | Console window alone triggers it | Low; included only because it is cheap to exclude |
 | `SetResolution` block makes in-game display settings inert | High, verified in source |
